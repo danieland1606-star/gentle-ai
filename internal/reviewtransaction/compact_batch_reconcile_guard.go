@@ -226,6 +226,9 @@ func loadCompactBatchReconcileSnapshotLocked(ctx context.Context, locks *compact
 		if err := ctx.Err(); err != nil {
 			return CompactBatchReconcileSnapshot{}, err
 		}
+		if isReservedCompactNamespace(entry.Name()) {
+			continue
+		}
 		if !entry.IsDir() {
 			if entry.Name() != "LOCK" {
 				report.EntryDiagnostics = append(report.EntryDiagnostics, CompactRecoveryEntryDiagnostic{

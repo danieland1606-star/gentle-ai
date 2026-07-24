@@ -550,7 +550,7 @@ func discoverFinalVerificationRetryStores(versionRoot string, template CompactSt
 	}
 	stores := make([]CompactStore, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() || validateLineageID(entry.Name()) != nil {
+		if !isCompactLineageEntry(entry) {
 			continue
 		}
 		dir := filepath.Join(versionRoot, entry.Name())

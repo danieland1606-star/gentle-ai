@@ -96,6 +96,14 @@ type ValidatedChain struct {
 
 var lineageIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
+func isReservedCompactNamespace(name string) bool {
+	return name == "compatibility" || name == "maintenance" || name == "quarantine"
+}
+
+func isCompactLineageEntry(entry os.DirEntry) bool {
+	return entry.IsDir() && !isReservedCompactNamespace(entry.Name()) && validateLineageID(entry.Name()) == nil
+}
+
 func AuthoritativeStore(ctx context.Context, repo, lineageID string) (Store, error) {
 	if err := validateLineageID(lineageID); err != nil {
 		return Store{}, err

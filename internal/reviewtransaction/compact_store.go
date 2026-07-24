@@ -677,7 +677,7 @@ func DiscoverCompactStores(ctx context.Context, repo string) ([]CompactStore, er
 	}
 	stores := make([]CompactStore, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() || validateLineageID(entry.Name()) != nil {
+		if !isCompactLineageEntry(entry) {
 			continue
 		}
 		dir := filepath.Join(versionRoot, entry.Name())

@@ -254,7 +254,7 @@ func (scan *authorityRepairScan) scanCompact(ctx context.Context, budget *author
 		if err := budget.addEntry(); err != nil {
 			return err
 		}
-		if !entry.IsDir() || validateLineageID(entry.Name()) != nil {
+		if !isCompactLineageEntry(entry) {
 			scan.unsupported++
 			continue
 		}
