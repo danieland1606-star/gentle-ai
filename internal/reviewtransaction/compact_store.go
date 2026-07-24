@@ -141,10 +141,11 @@ type CompactTraceEntry struct {
 }
 
 type CompactTransport struct {
-	Schema       string          `json:"schema"`
-	Record       CompactRecord   `json:"record"`
-	Receipt      *CompactReceipt `json:"receipt,omitempty"`
-	BundleDigest string          `json:"bundle_digest"`
+	Schema        string          `json:"schema"`
+	Record        CompactRecord   `json:"record"`
+	Receipt       *CompactReceipt `json:"receipt,omitempty"`
+	BundleDigest  string          `json:"bundle_digest"`
+	recordPayload json.RawMessage
 }
 
 type CompactRecoveryRequest struct {
@@ -1602,6 +1603,14 @@ func CompactRevisionForState(state CompactState) (string, error) {
 }
 
 func parseCompactRecord(payload []byte, lineageID string) (CompactRecord, error) {
+	var envelope struct {
+		Schema   string          `json:"schema"`
+		Revision string          `json:"revision"`
+		State    json.RawMessage `json:"state"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return CompactRecord{}, err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var record CompactRecord
@@ -1620,6 +1629,14 @@ func parseCompactRecord(payload []byte, lineageID string) (CompactRecord, error)
 		if err := decoder.Decode(&extra); err != io.EOF {
 			return CompactRecord{}, errors.New("multiple JSON values in compact review state")
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(envelope.State, &fields); err != nil {
+			return CompactRecord{}, err
+		}
+		if _, present := fields["risk_source"]; !present {
+			record.State.RiskSource = RiskSourceAutomatic
+			record.HistoricalCompat = true
+		}
 	}
 	if record.Schema != compactRecordSchema || !validSHA256(record.Revision) {
 		return CompactRecord{}, errors.New("invalid compact review state record")
@@ -1631,8 +1648,12 @@ func parseCompactRecord(payload []byte, lineageID string) (CompactRecord, error)
 		return CompactRecord{}, errors.New("compact state lineage does not match its directory")
 	}
 	if !record.HistoricalCompat {
-		want, _, err := makeCompactRecord(record.State)
-		if err != nil || want.Revision != record.Revision {
+		var compacted bytes.Buffer
+		if err := json.Compact(&compacted, envelope.State); err != nil {
+			return CompactRecord{}, err
+		}
+		sum := sha256.Sum256(append([]byte(CompactStateSchema+"\x00"), compacted.Bytes()...))
+		if "sha256:"+hex.EncodeToString(sum[:]) != record.Revision {
 			return CompactRecord{}, errors.New("compact review state checksum mismatch")
 		}
 	}
@@ -1704,6 +1725,9 @@ func parseHistoricalCompactRecord(payload []byte) (CompactRecord, error) {
 	var state CompactState
 	if err := stateDecoder.Decode(&state); err != nil {
 		return CompactRecord{}, err
+	}
+	if _, present := fields["risk_source"]; !present {
+		state.RiskSource = RiskSourceAutomatic
 	}
 	var compacted bytes.Buffer
 	if err := json.Compact(&compacted, envelope.State); err != nil {
@@ -1803,24 +1827,36 @@ func (store CompactStore) ExportTransport() (CompactTransport, error) {
 }
 
 func ParseCompactTransport(payload []byte) (CompactTransport, error) {
+	var envelope struct {
+		Schema       string          `json:"schema"`
+		Record       json.RawMessage `json:"record"`
+		Receipt      json.RawMessage `json:"receipt,omitempty"`
+		BundleDigest string          `json:"bundle_digest"`
+	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
-	var transport CompactTransport
-	if err := decoder.Decode(&transport); err != nil {
+	if err := decoder.Decode(&envelope); err != nil {
 		return CompactTransport{}, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return CompactTransport{}, errors.New("multiple JSON values in compact review transport")
 	}
-	if transport.Schema != CompactTransportSchema || transport.BundleDigest != compactTransportDigest(transport) {
+	if envelope.Schema != CompactTransportSchema || envelope.BundleDigest != compactRawTransportDigest(envelope.Schema, envelope.Record, envelope.Receipt) {
 		return CompactTransport{}, errors.New("compact review transport checksum mismatch")
 	}
-	recordPayload, _ := json.Marshal(transport.Record)
-	if _, err := parseCompactRecord(recordPayload, transport.Record.State.LineageID); err != nil {
+	record, err := parseCompactRecord(envelope.Record, "")
+	if err != nil {
 		return CompactTransport{}, err
 	}
-	if transport.Receipt != nil {
+	transport := CompactTransport{Schema: envelope.Schema, Record: record, BundleDigest: envelope.BundleDigest,
+		recordPayload: append(json.RawMessage(nil), envelope.Record...)}
+	if len(envelope.Receipt) != 0 && !bytes.Equal(bytes.TrimSpace(envelope.Receipt), []byte("null")) {
+		receipt, err := ParseCompactReceipt(envelope.Receipt)
+		if err != nil {
+			return CompactTransport{}, err
+		}
+		transport.Receipt = &receipt
 		authoritative, err := transport.Record.State.Receipt()
 		if err != nil || transport.Receipt.Validate() != nil || !compactReceiptEqual(*transport.Receipt, authoritative) {
 			return CompactTransport{}, errors.New("compact transport receipt does not match state")
@@ -1843,8 +1879,12 @@ func WriteCompactTransportAtomic(path string, transport CompactTransport) error 
 }
 
 func ImportCompactTransport(ctx context.Context, repo string, transport CompactTransport) (CompactRecord, error) {
-	payload, _ := json.Marshal(transport)
-	validated, err := ParseCompactTransport(payload)
+	validated := transport
+	var err error
+	if len(transport.recordPayload) == 0 {
+		payload, _ := json.Marshal(transport)
+		validated, err = ParseCompactTransport(payload)
+	}
 	if err != nil {
 		return CompactRecord{}, err
 	}
@@ -1878,7 +1918,7 @@ func ImportCompactTransport(ctx context.Context, repo string, transport CompactT
 		return CompactRecord{}, err
 	}
 	defer lock.release()
-	if err := store.installTransportRecordLocked(ctx, validated.Record); err != nil {
+	if err := store.installTransportRecordLocked(ctx, validated.Record, validated.recordPayload); err != nil {
 		return CompactRecord{}, err
 	}
 	if validated.Receipt != nil {
@@ -1889,7 +1929,7 @@ func ImportCompactTransport(ctx context.Context, repo string, transport CompactT
 	return store.loadCompactRecordLocked()
 }
 
-func (store CompactStore) installTransportRecordLocked(ctx context.Context, record CompactRecord) error {
+func (store CompactStore) installTransportRecordLocked(ctx context.Context, record CompactRecord, recordPayload []byte) error {
 	if existing, loadErr := store.loadCompactRecordLocked(); loadErr == nil {
 		if existing.Revision == record.Revision && compactStateEqual(existing.State, record.State) {
 			return nil
@@ -1900,6 +1940,9 @@ func (store CompactStore) installTransportRecordLocked(ctx context.Context, reco
 	}
 	if err := validateCompactTransportDelivery(ctx, store.repo, record.State); err != nil {
 		return err
+	}
+	if record.HistoricalCompat && len(recordPayload) != 0 {
+		return writeAtomic(store.StatePath(), append(recordPayload, '\n'), 0o644)
 	}
 	want, payload, err := makeCompactRecord(record.State)
 	if err != nil || want.Revision != record.Revision {
@@ -1955,6 +1998,18 @@ func compactTransportDigest(transport CompactTransport) string {
 	copy := transport
 	copy.BundleDigest = ""
 	payload, _ := json.Marshal(copy)
+	sum := sha256.Sum256(append([]byte("gentle-ai.review-transport/v2\x00"), payload...))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func compactRawTransportDigest(schema string, record, receipt json.RawMessage) string {
+	canonical := struct {
+		Schema       string          `json:"schema"`
+		Record       json.RawMessage `json:"record"`
+		Receipt      json.RawMessage `json:"receipt,omitempty"`
+		BundleDigest string          `json:"bundle_digest"`
+	}{Schema: schema, Record: record, Receipt: receipt}
+	payload, _ := json.Marshal(canonical)
 	sum := sha256.Sum256(append([]byte("gentle-ai.review-transport/v2\x00"), payload...))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }

@@ -25,10 +25,15 @@ var semanticSourceExtensions = map[string]struct{}{
 
 type RiskLevel string
 
+type RiskSource string
+
 const (
 	RiskLow    RiskLevel = "low"
 	RiskMedium RiskLevel = "medium"
 	RiskHigh   RiskLevel = "high"
+
+	RiskSourceAutomatic RiskSource = "automatic"
+	RiskSourceExplicit  RiskSource = "explicit"
 )
 
 type RiskSignal string

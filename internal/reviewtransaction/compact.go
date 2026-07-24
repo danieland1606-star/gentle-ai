@@ -38,6 +38,7 @@ type CompactState struct {
 	GenesisPaths              []string                     `json:"genesis_paths"`
 	PolicyHash                string                       `json:"policy_hash"`
 	RiskLevel                 RiskLevel                    `json:"risk_level"`
+	RiskSource                RiskSource                   `json:"risk_source"`
 	SelectedLenses            []string                     `json:"selected_lenses"`
 	OriginalChangedLines      int                          `json:"original_changed_lines"`
 	CorrectionBudget          int                          `json:"correction_budget"`
@@ -219,6 +220,7 @@ type CompactReceipt struct {
 	PolicyHash         string        `json:"policy_hash"`
 	EvidenceHash       string        `json:"evidence_hash"`
 	RiskLevel          RiskLevel     `json:"risk_level"`
+	RiskSource         RiskSource    `json:"risk_source"`
 	SelectedLenses     []string      `json:"selected_lenses"`
 	ResolvedFindingIDs []string      `json:"resolved_finding_ids"`
 	TerminalState      TerminalState `json:"terminal_state"`
@@ -261,7 +263,7 @@ func NewCompactState(start Start) (CompactState, error) {
 		Schema: CompactStateSchema, LineageID: start.LineageID, Generation: start.Generation,
 		State: StateReviewing, InitialSnapshot: start.Snapshot, CurrentSnapshot: start.Snapshot,
 		GenesisPaths: append([]string(nil), start.Snapshot.Paths...), PolicyHash: start.PolicyHash,
-		RiskLevel: start.RiskLevel, SelectedLenses: lenses, OriginalChangedLines: *start.OriginalChangedLines,
+		RiskLevel: start.RiskLevel, RiskSource: canonicalRiskSource(start.RiskSource), SelectedLenses: lenses, OriginalChangedLines: *start.OriginalChangedLines,
 		CorrectionBudget: budget, LensResults: []LensResult{}, Findings: []Finding{},
 		Classifications: map[string]FindingEvidence{}, Outcomes: map[string]EvidenceOutcome{},
 		FixFindingIDs: []string{}, FollowUps: []FollowUp{}, FixDeltaHash: EmptyFixDeltaHash,
@@ -364,6 +366,9 @@ func (state CompactState) Validate() error {
 	selected, err := validateSelectedLenses(ModeOrdinaryBounded, state.RiskLevel, state.SelectedLenses)
 	if err != nil || !equalStrings(selected, state.SelectedLenses) {
 		return errors.New("compact selected lenses are invalid")
+	}
+	if err := validateCompactRiskSource(state.RiskLevel, state.RiskSource); err != nil {
+		return err
 	}
 	wantBudget, err := CorrectionBudget(state.OriginalChangedLines)
 	if err != nil || state.CorrectionBudget != wantBudget {
@@ -1175,7 +1180,7 @@ func (state CompactState) Receipt() (CompactReceipt, error) {
 		BaseTree:   state.InitialSnapshot.BaseTree, InitialReviewTree: state.InitialSnapshot.CandidateTree,
 		FinalCandidateTree: state.CurrentSnapshot.CandidateTree, PathsDigest: state.InitialSnapshot.PathsDigest,
 		FixDeltaHash: state.FixDeltaHash, PolicyHash: state.PolicyHash, EvidenceHash: evidence,
-		RiskLevel: state.RiskLevel, SelectedLenses: append([]string{}, state.SelectedLenses...),
+		RiskLevel: state.RiskLevel, RiskSource: state.RiskSource, SelectedLenses: append([]string{}, state.SelectedLenses...),
 		ResolvedFindingIDs: append([]string(nil), state.FixFindingIDs...), TerminalState: terminal,
 	}
 	if err := receipt.Validate(); err != nil {
@@ -1251,6 +1256,9 @@ func (receipt CompactReceipt) Validate() error {
 	if _, err := validateSelectedLenses(ModeOrdinaryBounded, receipt.RiskLevel, receipt.SelectedLenses); err != nil {
 		return err
 	}
+	if err := validateCompactRiskSource(receipt.RiskLevel, receipt.RiskSource); err != nil {
+		return err
+	}
 	ids, err := canonicalStrings(receipt.ResolvedFindingIDs, "resolved finding id")
 	if err != nil || !equalStrings(ids, receipt.ResolvedFindingIDs) {
 		return errors.New("compact receipt resolved finding IDs must be canonical")
@@ -1262,6 +1270,10 @@ func (receipt CompactReceipt) Validate() error {
 }
 
 func ParseCompactReceipt(payload []byte) (CompactReceipt, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return CompactReceipt{}, err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var receipt CompactReceipt
@@ -1272,11 +1284,31 @@ func ParseCompactReceipt(payload []byte) (CompactReceipt, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return CompactReceipt{}, errors.New("multiple JSON values in compact review receipt")
 	}
+	if _, present := fields["risk_source"]; !present {
+		receipt.RiskSource = RiskSourceAutomatic
+	}
 	if err := receipt.Validate(); err != nil {
 		return CompactReceipt{}, err
 	}
 	normalizeCompactReceipt(&receipt)
 	return receipt, nil
+}
+
+func canonicalRiskSource(source RiskSource) RiskSource {
+	if source == "" {
+		return RiskSourceAutomatic
+	}
+	return source
+}
+
+func validateCompactRiskSource(level RiskLevel, source RiskSource) error {
+	if source != RiskSourceAutomatic && source != RiskSourceExplicit {
+		return errors.New("compact risk source is invalid")
+	}
+	if source == RiskSourceExplicit && level != RiskHigh {
+		return errors.New("explicit compact risk selector must be high")
+	}
+	return nil
 }
 
 func WriteCompactReceiptAtomic(path string, receipt CompactReceipt) error {
