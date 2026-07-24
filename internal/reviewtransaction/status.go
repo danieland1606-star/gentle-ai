@@ -184,6 +184,9 @@ func inventoryVersion(ctx context.Context, repo, root, directory string, version
 	}
 	for _, item := range entries {
 		path := filepath.Join(versionRoot, item.Name())
+		if version == AuthorityVersionCompact && isReservedCompactNamespace(item.Name()) {
+			continue
+		}
 		if version == AuthorityVersionCompact && item.Name() == "LOCK" && !item.IsDir() {
 			continue
 		}

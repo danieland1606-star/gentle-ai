@@ -72,6 +72,9 @@ func InspectCompactRecoveryEdges(ctx context.Context, repo string) (CompactRecov
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
+		if isReservedCompactNamespace(entry.Name()) {
+			continue
+		}
 		if !entry.IsDir() {
 			if entry.Name() != "LOCK" {
 				report.EntryDiagnostics = append(report.EntryDiagnostics, CompactRecoveryEntryDiagnostic{
