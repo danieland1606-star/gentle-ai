@@ -98,7 +98,7 @@ func TestCompactStoreReloadsLegacyV2ReceiptWithoutRewritingItsIdentity(t *testin
 		Projection: state.InitialSnapshot.Projection, BaseTree: state.InitialSnapshot.BaseTree,
 		InitialReviewTree: state.InitialSnapshot.CandidateTree, FinalCandidateTree: state.CurrentSnapshot.CandidateTree,
 		PathsDigest: state.InitialSnapshot.PathsDigest, FixDeltaHash: state.FixDeltaHash, PolicyHash: state.PolicyHash,
-		EvidenceHash: state.EvidenceHash, RiskLevel: state.RiskLevel, SelectedLenses: append([]string(nil), state.SelectedLenses...),
+		EvidenceHash: state.EvidenceHash, RiskLevel: state.RiskLevel, RiskSource: state.RiskSource, SelectedLenses: append([]string(nil), state.SelectedLenses...),
 		ResolvedFindingIDs: append([]string(nil), state.FixFindingIDs...), TerminalState: TerminalApproved,
 	}
 	if err := WriteCompactReceiptAtomic(store.ReceiptPath(), receipt); err != nil {

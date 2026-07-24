@@ -99,6 +99,7 @@ type Start struct {
 	Snapshot             Snapshot
 	PolicyHash           string
 	RiskLevel            RiskLevel
+	RiskSource           RiskSource
 	SelectedLenses       []string
 	OriginalChangedLines *int
 }
